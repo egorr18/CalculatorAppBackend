@@ -69,6 +69,32 @@ func postCalculations(c echo.Context) error {
 	return c.JSON(http.StatusCreated, calc)
 }
 
+func PatchCalculations(c echo.Context) error {
+	//достає id з силки яку ми хочемо обновити
+	id := c.Param("id")
+
+	//Передаємо запрос
+	var req CalculationRequest
+	//Декодуємо запит
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid request"})
+	}
+	// рахуємо новий результат
+	result, err := CalculationExpression(req.Expression)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid expression"})
+	}
+
+	for i, calculation := range calculations {
+		if calculation.ID == id {
+			calculations[i].Expression = req.Expression
+			calculations[i].Result = result
+			return c.JSON(http.StatusOK, calculations[i])
+		}
+	}
+	return c.JSON(http.StatusBadRequest, map[string]string{"error": "Calculation not found"})
+}
+
 func main() {
 	e := echo.New()
 
