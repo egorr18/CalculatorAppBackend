@@ -6,8 +6,29 @@ import (
 	"github.com/google/uuid"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/labstack/gommon/log"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 	"net/http"
 )
+
+var db *gorm.DB
+
+// Відбувається ініціалізація з'єднання з базою даних PostgreSQL
+func InitDB() {
+	//Підключення до PostgreSQL
+	dsn := "host=localhost user=postgres password=yourpassword dbname=postgres port=5432 sslmode=disable"
+	var err error
+
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("Could not connect to database: %v", err)
+	}
+	// Автоматично створює або оновлює таблиці в середині бази данних
+	if err := db.AutoMigrate(&Calculation{}); err != nil {
+		log.Fatalf("Could not connect to database: %v", err)
+	}
+}
 
 // Calculation містить дані про обчислення
 type Calculation struct {
@@ -20,9 +41,6 @@ type Calculation struct {
 type CalculationRequest struct {
 	Expression string `json:"expression"`
 }
-
-// Глобальна перемінна історія наших виразів
-var calculations = []Calculation{}
 
 // CalculationExpression обробляє математичний вираз і повертає результат як рядок
 func CalculationExpression(expression string) (string, error) {
@@ -38,8 +56,15 @@ func CalculationExpression(expression string) (string, error) {
 	return fmt.Sprintf("%v", result), nil
 }
 
+//Основні методи ORM - Create, Find, Update, Delete
+
 // GetCalculations повертає всі обчислення у форматі JSON
 func GetCalculations(c echo.Context) error {
+	var calculations []Calculation
+	// Find використовується для знаходження всіх записів в базі данних
+	if err := db.Find(&calculations).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not get calculations"})
+	}
 	return c.JSON(http.StatusOK, calculations)
 }
 
@@ -58,14 +83,16 @@ func PostCalculations(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid expression"}) // map — структура для зберігання даних у форматі "ключ → значення"
 	} // Якщо все ок
 
-	// Створюємо новий вираз
+	// Створюємо новий вираз для запису в базу данних
 	calc := Calculation{
 		uuid.NewString(),
 		req.Expression,
 		result,
 	}
 	// Додаємо в історію
-	calculations = append(calculations, calc)
+	if err := db.Create(&calc).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not add calculation"})
+	}
 	// і успішно повертаємо
 	return c.JSON(http.StatusCreated, calc)
 }
@@ -86,31 +113,37 @@ func PatchCalculations(c echo.Context) error {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Invalid expression"})
 	}
 
-	//Оновлюємо
-	for i, calculation := range calculations {
-		if calculation.ID == id {
-			calculations[i].Expression = req.Expression
-			calculations[i].Result = result
-			return c.JSON(http.StatusOK, calculations[i])
-		}
+	//Найщли вираз по id
+	var calc Calculation
+	if err := db.First(&calc, "id = ?", id).Error; err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Could not find expression"})
 	}
-	return c.JSON(http.StatusBadRequest, map[string]string{"error": "Calculation not found"})
+
+	//Новий вираз який нам передав сайт
+	calc.Expression = req.Expression
+	calc.Result = result
+
+	//Метод для збереження змін
+	if err := db.Save(&calc).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not update calculation"})
+	}
+	return c.JSON(http.StatusOK, calc) //Повертаємо новий оновлений вираз
 }
 
 func DeleteCalculations(c echo.Context) error {
+	//Шукаємо id по якому будемо видаляти
 	id := c.Param("id")
-
-	for i, calculation := range calculations {
-		if calculation.ID == id {
-			calculations = append(calculations[:i], calculations[i+1:]...)
-			//Повертає відповідь без тіла 'код 204'
-			return c.NoContent(http.StatusNoContent)
-		}
+	//Видаляємо
+	if err := db.Delete(&Calculation{}, "id", id).Error; err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Could not delete calculation"})
 	}
-	return c.JSON(http.StatusBadRequest, map[string]string{"error": "Calculation not found"})
+
+	return c.NoContent(http.StatusNoContent)
 }
 
 func main() {
+	InitDB()
+
 	e := echo.New()
 
 	e.Use(middleware.CORS())   // запит -> middleware -> обробка CORS -> передає на сервер
